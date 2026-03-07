@@ -46,7 +46,7 @@ app.post("/speak", async (req, res) => {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   const body = JSON.stringify({
     text,
-    model_id: "eleven_turbo_v2",
+    model_id: "eleven_multilingual_v2",
     voice_settings: { stability: 0.4, similarity_boost: 0.8, style: 0.2, use_speaker_boost: true }
   });
 
@@ -65,7 +65,10 @@ app.post("/speak", async (req, res) => {
     if (response.statusCode !== 200) {
       let err = "";
       response.on("data", c => err += c);
-      response.on("end", () => res.status(500).json({ error: "ElevenLabs error", detail: err }));
+      response.on("end", () => {
+        console.error("ElevenLabs status:", response.statusCode, "body:", err);
+        res.status(500).json({ error: "ElevenLabs error", status: response.statusCode, detail: err });
+      });
       return;
     }
     res.setHeader("Content-Type", "audio/mpeg");
