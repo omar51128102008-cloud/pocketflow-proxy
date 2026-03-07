@@ -8,6 +8,7 @@ app.use(express.json());
 
 app.post("/chat", async (req, res) => {
   const body = JSON.stringify(req.body);
+  const apiKey = process.env.GROQ_API_KEY;
 
   const options = {
     hostname: "api.groq.com",
@@ -15,7 +16,7 @@ app.post("/chat", async (req, res) => {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": "Bearer " + process.env.GROQ_API_KEY,
+      "Authorization": "Bearer " + apiKey,
       "Content-Length": Buffer.byteLength(body)
     }
   };
@@ -40,4 +41,5 @@ app.post("/chat", async (req, res) => {
   request.end();
 });
 
-app.listen(3001, () => console.log("Proxy running on port 3001"));
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => console.log("Proxy running on port " + PORT));
