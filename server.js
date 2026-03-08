@@ -5,14 +5,48 @@ const Stripe = require("stripe");
 
 const app = express();
 app.use(cors());
-app.use(express.json());
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const VOICE_ID = "21m00Tcm4TlvDq8ikWAM";
 
 const stripe = Stripe(STRIPE_SECRET_KEY);
+
+// ── WEBHOOK (must be before express.json()) ───────────────────────────────────
+app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, req.headers["stripe-signature"], STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.error("Webhook signature failed:", err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  const obj = event.data.object;
+  switch (event.type) {
+    case "customer.subscription.created":
+      console.log("Subscription created:", obj.id, obj.status);
+      break;
+    case "customer.subscription.updated":
+      console.log("Subscription updated:", obj.id, "status:", obj.status, "cancel_at_period_end:", obj.cancel_at_period_end);
+      break;
+    case "customer.subscription.deleted":
+      console.log("Subscription cancelled:", obj.id);
+      break;
+    case "invoice.payment_failed":
+      console.log("Payment failed for customer:", obj.customer);
+      break;
+    default:
+      console.log("Unhandled event:", event.type);
+  }
+
+  res.json({ received: true });
+});
+
+// ── JSON parsing (after webhook) ──────────────────────────────────────────────
+app.use(express.json());
 
 // ── HEALTH ────────────────────────────────────────────────────────────────────
 app.get("/", (req, res) => res.json({ status: "ok", service: "pocketflow-proxy" }));
@@ -63,13 +97,10 @@ app.post("/subscription-status", async (req, res) => {
     if (!customers.data.length) return res.json({ plan: "free" });
 
     const customer = customers.data[0];
-
-    // Check active first
     let subs = await stripe.subscriptions.list({ customer: customer.id, status: "active", limit: 1 });
     let sub = subs.data[0];
     let status = "active";
 
-    // Then trialing
     if (!sub) {
       subs = await stripe.subscriptions.list({ customer: customer.id, status: "trialing", limit: 1 });
       sub = subs.data[0];
