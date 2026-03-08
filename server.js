@@ -1,85 +1,187 @@
 const express = require("express");
 const cors = require("cors");
-const https = require("https");
+const fetch = (...args) => import("node-fetch").then(({ default: f }) => f(...args));
+const Stripe = require("stripe");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ── Groq chat ──────────────────────────────────────────────────────────────────
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const VOICE_ID = "21m00Tcm4TlvDq8ikWAM";
+
+const stripe = Stripe(STRIPE_SECRET_KEY);
+
+// ── HEALTH ────────────────────────────────────────────────────────────────────
+app.get("/", (req, res) => res.json({ status: "ok", service: "pocketflow-proxy" }));
+
+// ── AI CHAT ───────────────────────────────────────────────────────────────────
 app.post("/chat", async (req, res) => {
-  const body = JSON.stringify(req.body);
-  const apiKey = process.env.GROQ_API_KEY;
-
-  const options = {
-    hostname: "api.groq.com",
-    path: "/openai/v1/chat/completions",
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer " + apiKey,
-      "Content-Length": Buffer.byteLength(body)
-    }
-  };
-
-  const request = https.request(options, (response) => {
-    let data = "";
-    response.on("data", chunk => data += chunk);
-    response.on("end", () => {
-      try { res.json(JSON.parse(data)); }
-      catch (e) { res.status(500).json({ error: "Failed to parse response" }); }
+  try {
+    const { model, messages, max_tokens } = req.body;
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_API_KEY}` },
+      body: JSON.stringify({ model: model || "llama-3.3-70b-versatile", messages, max_tokens: max_tokens || 300 }),
     });
-  });
-  request.on("error", (err) => res.status(500).json({ error: err.message }));
-  request.write(body);
-  request.end();
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// ── ElevenLabs TTS ─────────────────────────────────────────────────────────────
-// Voice: Rachel (warm, natural female) — voice_id: 21m00Tcm4TlvDq8ikWAM
-const ELEVENLABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM";
-
+// ── TEXT TO SPEECH ────────────────────────────────────────────────────────────
 app.post("/speak", async (req, res) => {
-  const { text } = req.body;
-  if (!text) return res.status(400).json({ error: "No text provided" });
-
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  const body = JSON.stringify({
-    text,
-    model_id: "eleven_multilingual_v2",
-    voice_settings: { stability: 0.4, similarity_boost: 0.8, style: 0.2, use_speaker_boost: true }
-  });
-
-  const options = {
-    hostname: "api.elevenlabs.io",
-    path: `/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "xi-api-key": apiKey,
-      "Content-Length": Buffer.byteLength(body)
-    }
-  };
-
-  const request = https.request(options, (response) => {
-    if (response.statusCode !== 200) {
-      let err = "";
-      response.on("data", c => err += c);
-      response.on("end", () => {
-        console.error("ElevenLabs status:", response.statusCode, "body:", err);
-        res.status(500).json({ error: "ElevenLabs error", status: response.statusCode, detail: err });
-      });
-      return;
-    }
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Transfer-Encoding", "chunked");
-    response.pipe(res);
-  });
-
-  request.on("error", (err) => res.status(500).json({ error: err.message }));
-  request.write(body);
-  request.end();
+  try {
+    const { text } = req.body;
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "xi-api-key": ELEVENLABS_API_KEY },
+      body: JSON.stringify({
+        text,
+        model_id: "eleven_turbo_v2",
+        voice_settings: { stability: 0.4, similarity_boost: 0.8, speed: 1.1 },
+      }),
+    });
+    if (!response.ok) return res.status(500).json({ error: "TTS failed" });
+    const buffer = await response.arrayBuffer();
+    res.set("Content-Type", "audio/mpeg");
+    res.send(Buffer.from(buffer));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log("Proxy running on port " + PORT));
+// ── STRIPE: SUBSCRIPTION STATUS ───────────────────────────────────────────────
+app.post("/subscription-status", async (req, res) => {
+  try {
+    const { email } = req.body;
+    const customers = await stripe.customers.list({ email, limit: 1 });
+    if (!customers.data.length) return res.json({ plan: "free" });
+
+    const customer = customers.data[0];
+
+    // Check active first
+    let subs = await stripe.subscriptions.list({ customer: customer.id, status: "active", limit: 1 });
+    let sub = subs.data[0];
+    let status = "active";
+
+    // Then trialing
+    if (!sub) {
+      subs = await stripe.subscriptions.list({ customer: customer.id, status: "trialing", limit: 1 });
+      sub = subs.data[0];
+      status = "trialing";
+    }
+
+    if (!sub) return res.json({ plan: "free" });
+
+    const priceId = sub.items.data[0].price.id;
+    const plan = priceId === "price_1T8qP5RxHDrhPBhiNqLYFViQ" ? "starter" : "pro";
+
+    res.json({
+      plan, status,
+      current_period_end: sub.current_period_end,
+      cancel_at_period_end: sub.cancel_at_period_end,
+      subscription_id: sub.id,
+    });
+  } catch (err) {
+    console.error("subscription-status error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── STRIPE: CREATE CHECKOUT ───────────────────────────────────────────────────
+app.post("/create-checkout", async (req, res) => {
+  try {
+    const { plan, price_id, user_id, email, success_url, cancel_url } = req.body;
+
+    let customer;
+    const existing = await stripe.customers.list({ email, limit: 1 });
+    if (existing.data.length) {
+      customer = existing.data[0];
+    } else {
+      customer = await stripe.customers.create({ email, metadata: { user_id } });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      customer: customer.id,
+      payment_method_types: ["card"],
+      mode: "subscription",
+      line_items: [{ price: price_id, quantity: 1 }],
+      subscription_data: {
+        trial_period_days: 14,
+        metadata: { user_id, plan },
+      },
+      success_url: success_url + "&session_id={CHECKOUT_SESSION_ID}",
+      cancel_url,
+      allow_promotion_codes: true,
+      billing_address_collection: "auto",
+    });
+
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error("create-checkout error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── STRIPE: CANCEL SUBSCRIPTION ───────────────────────────────────────────────
+app.post("/cancel-subscription", async (req, res) => {
+  try {
+    const { email } = req.body;
+    const customers = await stripe.customers.list({ email, limit: 1 });
+    if (!customers.data.length) return res.json({ ok: false });
+
+    const subs = await stripe.subscriptions.list({
+      customer: customers.data[0].id, status: "active", limit: 1,
+    });
+    if (!subs.data.length) return res.json({ ok: false });
+
+    await stripe.subscriptions.update(subs.data[0].id, { cancel_at_period_end: true });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── STRIPE: RESUME SUBSCRIPTION ───────────────────────────────────────────────
+app.post("/resume-subscription", async (req, res) => {
+  try {
+    const { email } = req.body;
+    const customers = await stripe.customers.list({ email, limit: 1 });
+    if (!customers.data.length) return res.json({ ok: false });
+
+    const subs = await stripe.subscriptions.list({
+      customer: customers.data[0].id, status: "active", limit: 1,
+    });
+    if (!subs.data.length) return res.json({ ok: false });
+
+    await stripe.subscriptions.update(subs.data[0].id, { cancel_at_period_end: false });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── STRIPE: BILLING PORTAL ────────────────────────────────────────────────────
+app.post("/billing-portal", async (req, res) => {
+  try {
+    const { email, return_url } = req.body;
+    const customers = await stripe.customers.list({ email, limit: 1 });
+    if (!customers.data.length) return res.json({ ok: false });
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer: customers.data[0].id,
+      return_url,
+    });
+    res.json({ url: session.url });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => console.log(`Pocketflow proxy running on port ${PORT}`));
