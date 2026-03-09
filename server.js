@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const fetch = (...args) => import("node-fetch").then(({ default: f }) => f(...args));
 const Stripe = require("stripe");
+const { Resend } = require("resend");
 
 const app = express();
 app.use(cors());
@@ -10,9 +11,11 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const VOICE_ID = "21m00Tcm4TlvDq8ikWAM";
 
 const stripe = Stripe(STRIPE_SECRET_KEY);
+const resend = new Resend(RESEND_API_KEY);
 
 // ── WEBHOOK (must be before express.json()) ───────────────────────────────────
 app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
@@ -218,17 +221,41 @@ app.post("/billing-portal", async (req, res) => {
 // ── BOOKING NOTIFICATION (owner alert) ───────────────────────────────────────
 app.post("/notify-booking", async (req, res) => {
   try {
-    const { owner_email, client_name, service, date, time, phone, deposit, biz_name } = req.body;
-    // Log the booking (email sending requires Resend/SendGrid - add later)
-    console.log(`NEW BOOKING for ${biz_name}:`);
-    console.log(`  Client: ${client_name} (${phone})`);
-    console.log(`  Service: ${service}`);
-    console.log(`  Date: ${date} at ${time}`);
-    console.log(`  Deposit: ${deposit}`);
-    console.log(`  Owner: ${owner_email}`);
-    // TODO: send email via Resend when API key added
+    const { owner_email, client_name, service, date, time, phone, deposit, biz_name, note } = req.body;
+    console.log(`NEW BOOKING: ${client_name} → ${service} on ${date} at ${time}`);
+
+    await resend.emails.send({
+      from: "onboarding@resend.dev",
+      to: owner_email,
+      subject: `📅 New Booking — ${client_name}`,
+      html: `
+        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#0f0f14;color:#fff;border-radius:16px;overflow:hidden;">
+          <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:32px 28px 24px;">
+            <div style="font-size:28px;margin-bottom:8px;">✦</div>
+            <div style="font-size:22px;font-weight:800;margin-bottom:4px;">New Booking!</div>
+            <div style="font-size:14px;opacity:0.8;">${biz_name}</div>
+          </div>
+          <div style="padding:28px;">
+            <table style="width:100%;border-collapse:collapse;">
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;width:40%">Client</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-weight:700;font-size:14px;">${client_name}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Phone</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${phone || "—"}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Service</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${service}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Date</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${date}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Time</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${time}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Deposit</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;color:#10b981;font-weight:700;">${deposit}</td></tr>
+              ${note ? `<tr><td style="padding:10px 0;color:#888;font-size:13px;">Note</td><td style="padding:10px 0;font-size:14px;">${note}</td></tr>` : ""}
+            </table>
+            <div style="margin-top:24px;padding:14px;background:#1e1e2e;border-radius:10px;font-size:12px;color:#888;text-align:center;">
+              Open Pocketflow to manage this appointment
+            </div>
+          </div>
+        </div>
+      `,
+    });
+
     res.json({ ok: true });
   } catch (err) {
+    console.error("notify-booking error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
