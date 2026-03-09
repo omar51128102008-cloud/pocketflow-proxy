@@ -79,11 +79,15 @@ app.post("/speak", async (req, res) => {
       headers: { "Content-Type": "application/json", "xi-api-key": ELEVENLABS_API_KEY },
       body: JSON.stringify({
         text,
-        model_id: "eleven_turbo_v2",
+        model_id: "eleven_turbo_v2_5",
         voice_settings: { stability: 0.4, similarity_boost: 0.8, speed: 1.1 },
       }),
     });
-    if (!response.ok) return res.status(500).json({ error: "TTS failed" });
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error("ElevenLabs error:", response.status, errText);
+      return res.status(500).json({ error: "TTS failed", details: errText });
+    }
     const buffer = await response.arrayBuffer();
     res.set("Content-Type", "audio/mpeg");
     res.send(Buffer.from(buffer));
