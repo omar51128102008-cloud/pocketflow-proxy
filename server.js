@@ -214,5 +214,36 @@ app.post("/billing-portal", async (req, res) => {
   }
 });
 
+
+// ── BOOKING NOTIFICATION (owner alert) ───────────────────────────────────────
+app.post("/notify-booking", async (req, res) => {
+  try {
+    const { owner_email, client_name, service, date, time, phone, deposit, biz_name } = req.body;
+    // Log the booking (email sending requires Resend/SendGrid - add later)
+    console.log(`NEW BOOKING for ${biz_name}:`);
+    console.log(`  Client: ${client_name} (${phone})`);
+    console.log(`  Service: ${service}`);
+    console.log(`  Date: ${date} at ${time}`);
+    console.log(`  Deposit: ${deposit}`);
+    console.log(`  Owner: ${owner_email}`);
+    // TODO: send email via Resend when API key added
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── APPOINTMENT REMINDER (called by cron or manually) ────────────────────────
+app.post("/send-reminder", async (req, res) => {
+  try {
+    const { client_name, client_phone, service, date, time, biz_name } = req.body;
+    console.log(`REMINDER: ${client_name} has ${service} on ${date} at ${time} at ${biz_name}`);
+    // TODO: send SMS via Twilio when keys added
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`Pocketflow proxy running on port ${PORT}`));
