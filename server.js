@@ -276,5 +276,76 @@ app.post("/send-reminder", async (req, res) => {
   }
 });
 
+
+// ── GOOGLE CALENDAR TOKEN STORAGE ────────────────────────────────────────────
+const googleTokens = {}; // { owner_id: { access_token, expiry, email } }
+
+app.post("/save-google-token", async (req, res) => {
+  try {
+    const { owner_id, access_token, expires_in, email } = req.body;
+    if (!owner_id || !access_token) return res.status(400).json({ error: "Missing fields" });
+    googleTokens[owner_id] = {
+      access_token,
+      expiry: Date.now() + (expires_in * 1000),
+      email,
+    };
+    console.log(`Google token saved for owner: ${owner_id} (${email})`);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/add-to-google-calendar", async (req, res) => {
+  try {
+    const { owner_id, service, date, time, client_name, biz_name, biz_location, deposit, phone } = req.body;
+    const tokenData = googleTokens[owner_id];
+    if (!tokenData || Date.now() > tokenData.expiry) {
+      return res.json({ ok: false, reason: "no_token" });
+    }
+
+    // Parse date and time
+    const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+    const parts = date.split(" ");
+    const month = months[parts[1]]; const day = parseInt(parts[2]);
+    const year = new Date().getFullYear();
+    const tp = time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+    if (!tp) return res.json({ ok: false, reason: "bad_time" });
+    let hour = parseInt(tp[1]); const min = parseInt(tp[2]);
+    if (tp[3].toUpperCase() === "PM" && hour !== 12) hour += 12;
+    if (tp[3].toUpperCase() === "AM" && hour === 12) hour = 0;
+    const start = new Date(year, month, day, hour, min);
+    const end = new Date(start.getTime() + 60 * 60 * 1000);
+
+    const event = {
+      summary: `${service} — ${client_name}`,
+      location: biz_location || biz_name || "",
+      description: `Client: ${client_name}\nPhone: ${phone || ""}\nDeposit: ${deposit || ""}\nBooked via Pocketflow`,
+      start: { dateTime: start.toISOString() },
+      end: { dateTime: end.toISOString() },
+      reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 60 }, { method: "email", minutes: 1440 }] },
+    };
+
+    const gcalRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + tokenData.access_token, "Content-Type": "application/json" },
+      body: JSON.stringify(event),
+    });
+
+    if (!gcalRes.ok) {
+      const err = await gcalRes.text();
+      console.error("Google Calendar error:", gcalRes.status, err);
+      return res.json({ ok: false, reason: "gcal_error", status: gcalRes.status });
+    }
+
+    const data = await gcalRes.json();
+    console.log(`Calendar event created for ${client_name}: ${data.id}`);
+    res.json({ ok: true, event_id: data.id });
+  } catch (err) {
+    console.error("add-to-google-calendar error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`Pocketflow proxy running on port ${PORT}`));
