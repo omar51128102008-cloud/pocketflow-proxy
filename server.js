@@ -12,10 +12,37 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_PHONE = process.env.TWILIO_PHONE; // e.g. +12015551234
 const VOICE_ID = "21m00Tcm4TlvDq8ikWAM";
 
 const stripe = Stripe(STRIPE_SECRET_KEY);
 const resend = new Resend(RESEND_API_KEY);
+
+// ── TWILIO HELPER ─────────────────────────────────────────────────────────────
+async function sendSMS(to, body) {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE) {
+    console.warn("Twilio not configured — skipping SMS");
+    return { ok: false, reason: "not_configured" };
+  }
+  let phone = to.replace(/\D/g, "");
+  if (phone.length === 10) phone = "1" + phone;
+  if (!phone.startsWith("+")) phone = "+" + phone;
+
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
+  const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Authorization": `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ From: TWILIO_PHONE, To: phone, Body: body }).toString(),
+  });
+  const data = await res.json();
+  if (!res.ok) { console.error("Twilio error:", data); return { ok: false, error: data.message }; }
+  console.log(`SMS sent to ${phone}: ${data.sid}`);
+  return { ok: true, sid: data.sid };
+}
 
 // ── WEBHOOK (must be before express.json()) ───────────────────────────────────
 app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
@@ -222,10 +249,10 @@ app.post("/billing-portal", async (req, res) => {
 });
 
 
-// ── BOOKING NOTIFICATION (owner alert) ───────────────────────────────────────
 app.post("/notify-booking", async (req, res) => {
   try {
-    const { owner_email, client_name, service, date, time, phone, deposit, biz_name, note } = req.body;
+    const { owner_email, client_name, client_phone, service, date, time, phone, deposit, biz_name, note } = req.body;
+    const clientPhone = client_phone || phone;
     console.log(`NEW BOOKING: ${client_name} → ${service} on ${date} at ${time}`);
 
     await resend.emails.send({
@@ -242,7 +269,7 @@ app.post("/notify-booking", async (req, res) => {
           <div style="padding:28px;">
             <table style="width:100%;border-collapse:collapse;">
               <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;width:40%">Client</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-weight:700;font-size:14px;">${client_name}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Phone</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${phone || "—"}</td></tr>
+              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Phone</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${clientPhone || "—"}</td></tr>
               <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Service</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${service}</td></tr>
               <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Date</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${date}</td></tr>
               <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Time</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${time}</td></tr>
@@ -257,6 +284,13 @@ app.post("/notify-booking", async (req, res) => {
       `,
     });
 
+    // SMS confirmation to client
+    if (clientPhone) {
+      await sendSMS(clientPhone,
+        `Hi ${client_name}! Your ${service} appointment at ${biz_name} is confirmed for ${date} at ${time}. See you then! 💜`
+      );
+    }
+
     res.json({ ok: true });
   } catch (err) {
     console.error("notify-booking error:", err.message);
@@ -264,14 +298,20 @@ app.post("/notify-booking", async (req, res) => {
   }
 });
 
-// ── APPOINTMENT REMINDER (called by cron or manually) ────────────────────────
+// ── APPOINTMENT REMINDER (24h before — call this from a cron job or manually) ─
 app.post("/send-reminder", async (req, res) => {
   try {
     const { client_name, client_phone, service, date, time, biz_name } = req.body;
     console.log(`REMINDER: ${client_name} has ${service} on ${date} at ${time} at ${biz_name}`);
-    // TODO: send SMS via Twilio when keys added
-    res.json({ ok: true });
+
+    if (!client_phone) return res.json({ ok: false, reason: "no_phone" });
+
+    const result = await sendSMS(client_phone,
+      `Hi ${client_name}! Reminder: you have a ${service} appointment at ${biz_name} tomorrow, ${date} at ${time}. Reply STOP to opt out.`
+    );
+    res.json(result);
   } catch (err) {
+    console.error("send-reminder error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
