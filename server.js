@@ -123,6 +123,25 @@ app.post("/speak", async (req, res) => {
   }
 });
 
+// ── STRIPE: CREATE PAYMENT INTENT (booking deposits) ─────────────────────────
+app.post("/create-payment-intent", async (req, res) => {
+  try {
+    const { amount, currency, metadata } = req.body;
+    if (!amount || amount < 50) {
+      return res.status(400).json({ error: "Amount must be at least $0.50 (50 cents)." });
+    }
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount,
+      currency: currency || "usd",
+      metadata: metadata || {},
+    });
+    res.json({ client_secret: paymentIntent.client_secret });
+  } catch (err) {
+    console.error("create-payment-intent error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── STRIPE: SUBSCRIPTION STATUS ───────────────────────────────────────────────
 app.post("/subscription-status", async (req, res) => {
   try {
@@ -255,34 +274,43 @@ app.post("/notify-booking", async (req, res) => {
     const clientPhone = client_phone || phone;
     console.log(`NEW BOOKING: ${client_name} → ${service} on ${date} at ${time}`);
 
-    await resend.emails.send({
-      from: "onboarding@resend.dev",
-      to: owner_email,
-      subject: `📅 New Booking — ${client_name}`,
-      html: `
-        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#0f0f14;color:#fff;border-radius:16px;overflow:hidden;">
-          <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:32px 28px 24px;">
-            <div style="font-size:28px;margin-bottom:8px;">✦</div>
-            <div style="font-size:22px;font-weight:800;margin-bottom:4px;">New Booking!</div>
-            <div style="font-size:14px;opacity:0.8;">${biz_name}</div>
-          </div>
-          <div style="padding:28px;">
-            <table style="width:100%;border-collapse:collapse;">
-              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;width:40%">Client</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-weight:700;font-size:14px;">${client_name}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Phone</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${clientPhone || "—"}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Service</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${service}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Date</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${date}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Time</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${time}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Deposit</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;color:#10b981;font-weight:700;">${deposit}</td></tr>
-              ${note ? `<tr><td style="padding:10px 0;color:#888;font-size:13px;">Note</td><td style="padding:10px 0;font-size:14px;">${note}</td></tr>` : ""}
-            </table>
-            <div style="margin-top:24px;padding:14px;background:#1e1e2e;border-radius:10px;font-size:12px;color:#888;text-align:center;">
-              Open Pocketflow to manage this appointment
+    // Email to owner (best-effort — skip if owner_email missing)
+    if (owner_email) {
+      try {
+        await resend.emails.send({
+          from: "onboarding@resend.dev",
+          to: owner_email,
+          subject: `📅 New Booking — ${client_name}`,
+          html: `
+            <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#0f0f14;color:#fff;border-radius:16px;overflow:hidden;">
+              <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:32px 28px 24px;">
+                <div style="font-size:28px;margin-bottom:8px;">✦</div>
+                <div style="font-size:22px;font-weight:800;margin-bottom:4px;">New Booking!</div>
+                <div style="font-size:14px;opacity:0.8;">${biz_name}</div>
+              </div>
+              <div style="padding:28px;">
+                <table style="width:100%;border-collapse:collapse;">
+                  <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;width:40%">Client</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-weight:700;font-size:14px;">${client_name}</td></tr>
+                  <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Phone</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${clientPhone || "—"}</td></tr>
+                  <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Service</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${service}</td></tr>
+                  <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Date</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${date}</td></tr>
+                  <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Time</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${time}</td></tr>
+                  <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Deposit</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;color:#10b981;font-weight:700;">${deposit}</td></tr>
+                  ${note ? `<tr><td style="padding:10px 0;color:#888;font-size:13px;">Note</td><td style="padding:10px 0;font-size:14px;">${note}</td></tr>` : ""}
+                </table>
+                <div style="margin-top:24px;padding:14px;background:#1e1e2e;border-radius:10px;font-size:12px;color:#888;text-align:center;">
+                  Open Pocketflow to manage this appointment
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      `,
-    });
+          `,
+        });
+      } catch (emailErr) {
+        console.error("Owner email failed:", emailErr.message);
+      }
+    } else {
+      console.warn("No owner_email provided — skipping owner notification email");
+    }
 
     // SMS confirmation to client
     if (clientPhone) {
