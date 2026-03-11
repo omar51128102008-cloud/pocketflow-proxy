@@ -15,6 +15,8 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_PHONE = process.env.TWILIO_PHONE; // e.g. +12015551234
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const VOICE_ID = "21m00Tcm4TlvDq8ikWAM";
 
 const stripe = Stripe(STRIPE_SECRET_KEY);
@@ -42,6 +44,19 @@ async function sendSMS(to, body) {
   if (!res.ok) { console.error("Twilio error:", data); return { ok: false, error: data.message }; }
   console.log(`SMS sent to ${phone}: ${data.sid}`);
   return { ok: true, sid: data.sid };
+}
+
+// ── SUPABASE HELPER: Get owner email from auth ──────────────────────────────
+async function getOwnerEmail(owner_id) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !owner_id) return null;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${owner_id}`, {
+      headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` },
+    });
+    if (!res.ok) return null;
+    const user = await res.json();
+    return user?.email || null;
+  } catch (e) { console.error("getOwnerEmail error:", e.message); return null; }
 }
 
 // ── WEBHOOK (must be before express.json()) ───────────────────────────────────
@@ -270,16 +285,19 @@ app.post("/billing-portal", async (req, res) => {
 
 app.post("/notify-booking", async (req, res) => {
   try {
-    const { owner_email, client_name, client_phone, service, date, time, phone, deposit, biz_name, note } = req.body;
+    const { owner_email, owner_id, client_name, client_phone, client_email, service, date, time, phone, deposit, total, biz_name, note } = req.body;
     const clientPhone = client_phone || phone;
     console.log(`NEW BOOKING: ${client_name} → ${service} on ${date} at ${time}`);
 
-    // Email to owner (best-effort — skip if owner_email missing)
-    if (owner_email) {
+    // Look up owner email from Supabase if not provided
+    const ownerEmail = owner_email || await getOwnerEmail(owner_id);
+
+    // Email to owner (best-effort)
+    if (ownerEmail) {
       try {
         await resend.emails.send({
           from: "onboarding@resend.dev",
-          to: owner_email,
+          to: ownerEmail,
           subject: `📅 New Booking — ${client_name}`,
           html: `
             <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#0f0f14;color:#fff;border-radius:16px;overflow:hidden;">
@@ -309,13 +327,48 @@ app.post("/notify-booking", async (req, res) => {
         console.error("Owner email failed:", emailErr.message);
       }
     } else {
-      console.warn("No owner_email provided — skipping owner notification email");
+      console.warn("No owner email found — skipping owner notification email");
+    }
+
+    // Receipt email to client (best-effort)
+    if (client_email) {
+      try {
+        await resend.emails.send({
+          from: "onboarding@resend.dev",
+          to: client_email,
+          subject: `Your booking at ${biz_name} is confirmed!`,
+          html: `
+            <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#0f0f14;color:#fff;border-radius:16px;overflow:hidden;">
+              <div style="background:linear-gradient(135deg,#10b981,#059669);padding:32px 28px 24px;">
+                <div style="font-size:28px;margin-bottom:8px;">✓</div>
+                <div style="font-size:22px;font-weight:800;margin-bottom:4px;">Booking Confirmed!</div>
+                <div style="font-size:14px;opacity:0.8;">${biz_name}</div>
+              </div>
+              <div style="padding:28px;">
+                <table style="width:100%;border-collapse:collapse;">
+                  <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;width:40%">Service</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;font-weight:700">${service}</td></tr>
+                  <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Date</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${date}</td></tr>
+                  <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Time</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;">${time}</td></tr>
+                  <tr><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;color:#888;font-size:13px;">Deposit Paid</td><td style="padding:10px 0;border-bottom:1px solid #1e1e2e;font-size:14px;color:#10b981;font-weight:700">${deposit}</td></tr>
+                  ${total ? `<tr><td style="padding:10px 0;color:#888;font-size:13px;">Balance Due</td><td style="padding:10px 0;font-size:14px;">Remaining at appointment</td></tr>` : ""}
+                </table>
+                <div style="margin-top:24px;padding:14px;background:#1e1e2e;border-radius:10px;font-size:12px;color:#888;text-align:center;">
+                  We look forward to seeing you! Save this email as your receipt.
+                </div>
+              </div>
+            </div>
+          `,
+        });
+        console.log(`Receipt sent to ${client_email}`);
+      } catch (receiptErr) {
+        console.error("Client receipt email failed:", receiptErr.message);
+      }
     }
 
     // SMS confirmation to client
     if (clientPhone) {
       await sendSMS(clientPhone,
-        `Hi ${client_name}! Your ${service} appointment at ${biz_name} is confirmed for ${date} at ${time}. See you then! 💜`
+        `Hi ${client_name}! Your ${service} appointment at ${biz_name} is confirmed for ${date} at ${time}. See you then!`
       );
     }
 
@@ -344,10 +397,82 @@ app.post("/send-reminder", async (req, res) => {
   }
 });
 
+// ── AUTO REMINDERS: Find tomorrow's appointments and send SMS ────────────────
+const CRON_SECRET = process.env.CRON_SECRET;
+
+async function runRemindersLogic() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    return { ok: false, reason: "supabase_not_configured" };
+  }
+
+  // Build tomorrow's date string like "Wed Jul 9"
+  const days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const dayStr = `${days[tomorrow.getDay()]} ${months[tomorrow.getMonth()]} ${tomorrow.getDate()}`;
+
+  console.log(`Running reminders for: ${dayStr}`);
+
+  // Fetch tomorrow's confirmed appointments
+  const apptRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/appointments?select=client_name,client_phone,service,time,day,owner_id&day=eq.${encodeURIComponent(dayStr)}&status=eq.confirmed`,
+    { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+  );
+  const appointments = await apptRes.json();
+  if (!appointments || !Array.isArray(appointments) || appointments.length === 0) {
+    console.log("No appointments tomorrow.");
+    return { ok: true, sent: 0 };
+  }
+
+  let sent = 0;
+  for (const appt of appointments) {
+    // Use phone from appointment if available, otherwise look up from clients table
+    let phone = appt.client_phone;
+    if (!phone) {
+      const clientRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/clients?select=phone&owner_id=eq.${appt.owner_id}&name=eq.${encodeURIComponent(appt.client_name)}&limit=1`,
+        { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+      );
+      const clients = await clientRes.json();
+      phone = clients?.[0]?.phone;
+    }
+    if (!phone) { console.log(`No phone for ${appt.client_name}, skipping`); continue; }
+
+    // Look up biz name
+    const bizRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/business_profiles?select=biz_name&user_id=eq.${appt.owner_id}&limit=1`,
+      { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    const bizData = await bizRes.json();
+    const bizName = bizData?.[0]?.biz_name || "your stylist";
+
+    const result = await sendSMS(phone,
+      `Hi ${appt.client_name}! Reminder: you have a ${appt.service} appointment at ${bizName} tomorrow, ${appt.day} at ${appt.time}. Reply STOP to opt out.`
+    );
+    if (result.ok) sent++;
+  }
+
+  console.log(`Reminders sent: ${sent}/${appointments.length}`);
+  return { ok: true, sent, total: appointments.length };
+}
+
+app.post("/run-reminders", async (req, res) => {
+  try { res.json(await runRemindersLogic()); }
+  catch (err) { console.error("run-reminders error:", err.message); res.status(500).json({ error: err.message }); }
+});
+
+// GET so a cron service (e.g. cron-job.org) can hit: GET /run-reminders?key=YOUR_CRON_SECRET
+app.get("/run-reminders", async (req, res) => {
+  if (CRON_SECRET && req.query.key !== CRON_SECRET) {
+    return res.status(403).json({ error: "Invalid key" });
+  }
+  try { res.json(await runRemindersLogic()); }
+  catch (err) { console.error("run-reminders error:", err.message); res.status(500).json({ error: err.message }); }
+});
+
 
 // ── GOOGLE CALENDAR TOKEN STORAGE (persisted in Supabase) ───────────────────
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
 async function getGoogleToken(owner_id) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return null;
