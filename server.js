@@ -285,8 +285,9 @@ app.post("/billing-portal", async (req, res) => {
 
 app.post("/notify-booking", async (req, res) => {
   try {
-    const { owner_email, owner_id, client_name, client_phone, client_email, service, date, time, phone, deposit, total, biz_name, note } = req.body;
+    const { owner_email, owner_id, client_name, client_phone, client_email, booking_ref, service, date, time, phone, deposit, total, biz_name, note } = req.body;
     const clientPhone = client_phone || phone;
+    const manageUrl = booking_ref ? `https://omar51128102008-cloud.github.io/pocketflow/book?manage=${booking_ref}` : null;
     console.log(`NEW BOOKING: ${client_name} → ${service} on ${date} at ${time}`);
 
     // Look up owner email from Supabase if not provided
@@ -354,6 +355,7 @@ app.post("/notify-booking", async (req, res) => {
                 </table>
                 <div style="margin-top:24px;padding:14px;background:#1e1e2e;border-radius:10px;font-size:12px;color:#888;text-align:center;">
                   We look forward to seeing you! Save this email as your receipt.
+                  ${manageUrl ? `<br/><a href="${manageUrl}" style="color:#a78bfa;font-weight:700;text-decoration:none;margin-top:8px;display:inline-block">Cancel or reschedule your booking</a>` : ""}
                 </div>
               </div>
             </div>
@@ -367,9 +369,10 @@ app.post("/notify-booking", async (req, res) => {
 
     // SMS confirmation to client
     if (clientPhone) {
-      await sendSMS(clientPhone,
-        `Hi ${client_name}! Your ${service} appointment at ${biz_name} is confirmed for ${date} at ${time}. See you then!`
-      );
+      const smsText = manageUrl
+        ? `Hi ${client_name}! Your ${service} at ${biz_name} is confirmed for ${date} at ${time}. Manage your booking: ${manageUrl}`
+        : `Hi ${client_name}! Your ${service} at ${biz_name} is confirmed for ${date} at ${time}. See you then!`;
+      await sendSMS(clientPhone, smsText);
     }
 
     res.json({ ok: true });
@@ -458,7 +461,11 @@ async function runRemindersLogic() {
 }
 
 app.post("/run-reminders", async (req, res) => {
-  try { res.json(await runRemindersLogic()); }
+  try {
+    const reminderResult = await runRemindersLogic();
+    const rebookResult = await runRebookLogic();
+    res.json({ reminders: reminderResult, rebook: rebookResult });
+  }
   catch (err) { console.error("run-reminders error:", err.message); res.status(500).json({ error: err.message }); }
 });
 
@@ -467,9 +474,71 @@ app.get("/run-reminders", async (req, res) => {
   if (CRON_SECRET && req.query.key !== CRON_SECRET) {
     return res.status(403).json({ error: "Invalid key" });
   }
-  try { res.json(await runRemindersLogic()); }
+  try {
+    const reminderResult = await runRemindersLogic();
+    const rebookResult = await runRebookLogic();
+    res.json({ reminders: reminderResult, rebook: rebookResult });
+  }
   catch (err) { console.error("run-reminders error:", err.message); res.status(500).json({ error: err.message }); }
 });
+
+// ── REBOOK REMINDERS: Nudge clients 3 days after their appointment ───────────
+async function runRebookLogic() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return { ok: false, reason: "supabase_not_configured" };
+
+  try {
+    // Build date string for 3 days ago like "Wed Jul 9"
+    const days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const target = new Date();
+    target.setDate(target.getDate() - 3);
+    const dayStr = `${days[target.getDay()]} ${months[target.getMonth()]} ${target.getDate()}`;
+
+    console.log(`Running rebook nudges for appointments on: ${dayStr}`);
+
+    const apptRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/appointments?select=client_name,client_phone,service,day,owner_id&day=eq.${encodeURIComponent(dayStr)}&status=eq.confirmed`,
+      { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    const appointments = await apptRes.json();
+    if (!appointments || !Array.isArray(appointments) || appointments.length === 0) {
+      console.log("No rebook candidates.");
+      return { ok: true, sent: 0 };
+    }
+
+    let sent = 0;
+    for (const appt of appointments) {
+      let phone = appt.client_phone;
+      if (!phone) {
+        const clientRes = await fetch(
+          `${SUPABASE_URL}/rest/v1/clients?select=phone&owner_id=eq.${appt.owner_id}&name=eq.${encodeURIComponent(appt.client_name)}&limit=1`,
+          { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+        );
+        const clients = await clientRes.json();
+        phone = clients?.[0]?.phone;
+      }
+      if (!phone) continue;
+
+      const bizRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/business_profiles?select=biz_name&user_id=eq.${appt.owner_id}&limit=1`,
+        { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+      );
+      const bizData = await bizRes.json();
+      const bizName = bizData?.[0]?.biz_name || "your stylist";
+
+      const result = await sendSMS(phone,
+        `Hi ${appt.client_name}! Hope you loved your ${appt.service} at ${bizName}! Ready to book your next appointment? Reply or visit our booking page anytime.`
+      );
+      if (result.ok) sent++;
+    }
+
+    console.log(`Rebook nudges sent: ${sent}/${appointments.length}`);
+    return { ok: true, sent, total: appointments.length };
+  } catch (err) {
+    console.error("runRebookLogic error:", err.message);
+    return { ok: false, error: err.message };
+  }
+}
 
 
 // ── GOOGLE CALENDAR TOKEN STORAGE (persisted in Supabase) ───────────────────
