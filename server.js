@@ -345,19 +345,49 @@ app.post("/send-reminder", async (req, res) => {
 });
 
 
-// ── GOOGLE CALENDAR TOKEN STORAGE ────────────────────────────────────────────
-const googleTokens = {}; // { owner_id: { access_token, expiry, email } }
+// ── GOOGLE CALENDAR TOKEN STORAGE (persisted in Supabase) ───────────────────
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+
+async function getGoogleToken(owner_id) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return null;
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/google_tokens?select=access_token,expiry,email&owner_id=eq.${owner_id}&limit=1`,
+      { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    const rows = await res.json();
+    return rows && rows.length > 0 ? rows[0] : null;
+  } catch (e) { console.error("getGoogleToken error:", e.message); return null; }
+}
+
+async function saveGoogleToken(owner_id, access_token, expiry, email) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return false;
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/google_tokens`,
+      {
+        method: "POST",
+        headers: {
+          "apikey": SUPABASE_SERVICE_KEY,
+          "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`,
+          "Content-Type": "application/json",
+          "Prefer": "resolution=merge-duplicates",
+        },
+        body: JSON.stringify({ owner_id, access_token, expiry, email }),
+      }
+    );
+    return res.ok;
+  } catch (e) { console.error("saveGoogleToken error:", e.message); return false; }
+}
 
 app.post("/save-google-token", async (req, res) => {
   try {
     const { owner_id, access_token, expires_in, email } = req.body;
     if (!owner_id || !access_token) return res.status(400).json({ error: "Missing fields" });
-    googleTokens[owner_id] = {
-      access_token,
-      expiry: Date.now() + (expires_in * 1000),
-      email,
-    };
-    console.log(`Google token saved for owner: ${owner_id} (${email})`);
+    const expiry = Date.now() + (expires_in * 1000);
+    const saved = await saveGoogleToken(owner_id, access_token, expiry, email);
+    console.log(`Google token saved for owner: ${owner_id} (${email}) — db: ${saved}`);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -367,7 +397,7 @@ app.post("/save-google-token", async (req, res) => {
 app.post("/add-to-google-calendar", async (req, res) => {
   try {
     const { owner_id, service, date, time, client_name, biz_name, biz_location, deposit, phone } = req.body;
-    const tokenData = googleTokens[owner_id];
+    const tokenData = await getGoogleToken(owner_id);
     if (!tokenData || Date.now() > tokenData.expiry) {
       return res.json({ ok: false, reason: "no_token" });
     }
