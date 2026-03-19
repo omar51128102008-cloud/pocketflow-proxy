@@ -639,5 +639,31 @@ app.post("/add-to-google-calendar", async (req, res) => {
   }
 });
 
+// ── SEND PROMO EMAIL ──────────────────────────────────────────────────────────
+app.post("/send-promo", async (req, res) => {
+  try {
+    const { to_email, subject, html_body, sms_body, to_phone } = req.body;
+    let emailOk = false, smsOk = false;
+
+    if (to_email) {
+      try {
+        await resend.emails.send({ from: "onboarding@resend.dev", to: to_email, subject, html: html_body });
+        emailOk = true;
+      } catch (e) { console.error("Promo email failed:", e.message); }
+    }
+
+    if (to_phone && sms_body) {
+      try {
+        const result = await sendSMS(to_phone, sms_body);
+        smsOk = result.ok;
+      } catch (e) { console.error("Promo SMS failed:", e.message); }
+    }
+
+    res.json({ ok: emailOk || smsOk, emailOk, smsOk });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`Pocketflow proxy running on port ${PORT}`));
