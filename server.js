@@ -464,7 +464,9 @@ app.post("/run-reminders", async (req, res) => {
   try {
     const reminderResult = await runRemindersLogic();
     const rebookResult = await runRebookLogic();
-    res.json({ reminders: reminderResult, rebook: rebookResult });
+    const reviewResult = await runReviewRequests();
+    const weeklyResult = await runWeeklySummary();
+    res.json({ reminders: reminderResult, rebook: rebookResult, reviews: reviewResult, weekly: weeklyResult });
   }
   catch (err) { console.error("run-reminders error:", err.message); res.status(500).json({ error: err.message }); }
 });
@@ -477,7 +479,9 @@ app.get("/run-reminders", async (req, res) => {
   try {
     const reminderResult = await runRemindersLogic();
     const rebookResult = await runRebookLogic();
-    res.json({ reminders: reminderResult, rebook: rebookResult });
+    const reviewResult = await runReviewRequests();
+    const weeklyResult = await runWeeklySummary();
+    res.json({ reminders: reminderResult, rebook: rebookResult, reviews: reviewResult, weekly: weeklyResult });
   }
   catch (err) { console.error("run-reminders error:", err.message); res.status(500).json({ error: err.message }); }
 });
@@ -536,6 +540,168 @@ async function runRebookLogic() {
     return { ok: true, sent, total: appointments.length };
   } catch (err) {
     console.error("runRebookLogic error:", err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+
+// ── REVIEW REQUESTS: Send "How was your visit?" 2h after appointment ─────────
+async function runReviewRequests() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return { ok: false, reason: "supabase_not_configured" };
+  try {
+    // Find appointments from today that are confirmed and time was 2+ hours ago
+    const days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const now = new Date();
+    const todayStr = `${days[now.getDay()]} ${months[now.getMonth()]} ${now.getDate()}`;
+
+    const apptRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/appointments?select=client_name,client_phone,service,time,booking_ref,owner_id,review_requested&day=eq.${encodeURIComponent(todayStr)}&status=eq.confirmed`,
+      { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    const appointments = await apptRes.json();
+    if (!appointments || !Array.isArray(appointments) || appointments.length === 0) {
+      return { ok: true, sent: 0 };
+    }
+
+    let sent = 0;
+    for (const appt of appointments) {
+      if (appt.review_requested) continue;
+      if (!appt.client_phone || !appt.booking_ref) continue;
+
+      // Check if appointment time was 2+ hours ago
+      try {
+        const tp = appt.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+        if (!tp) continue;
+        let h = parseInt(tp[1]);
+        if (tp[3].toUpperCase() === "PM" && h < 12) h += 12;
+        if (tp[3].toUpperCase() === "AM" && h === 12) h = 0;
+        const apptTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, parseInt(tp[2]));
+        const hoursSince = (now - apptTime) / 3600000;
+        if (hoursSince < 2 || hoursSince > 8) continue; // Only send 2-8h after
+      } catch { continue; }
+
+      // Get biz name
+      const bizRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/business_profiles?select=biz_name&user_id=eq.${appt.owner_id}&limit=1`,
+        { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+      );
+      const bizData = await bizRes.json();
+      const bizName = bizData?.[0]?.biz_name || "your stylist";
+      const reviewUrl = `https://omar51128102008-cloud.github.io/pocketflow/book?review=${appt.booking_ref}`;
+
+      const result = await sendSMS(appt.client_phone,
+        `Hi ${appt.client_name.split(" ")[0]}! How was your ${appt.service} at ${bizName}? We'd love your feedback! Leave a quick review: ${reviewUrl}`
+      );
+
+      if (result.ok) {
+        sent++;
+        // Mark as review requested
+        await fetch(
+          `${SUPABASE_URL}/rest/v1/appointments?booking_ref=eq.${appt.booking_ref}`,
+          {
+            method: "PATCH",
+            headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ review_requested: true }),
+          }
+        );
+      }
+    }
+
+    console.log(`Review requests sent: ${sent}`);
+    return { ok: true, sent };
+  } catch (err) {
+    console.error("runReviewRequests error:", err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+// ── WEEKLY SUMMARY: Send every Monday morning ────────────────────────────────
+async function runWeeklySummary() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return { ok: false, reason: "supabase_not_configured" };
+  // Only run on Mondays
+  if (new Date().getDay() !== 1) return { ok: true, skipped: "not_monday" };
+
+  try {
+    // Get all business owners
+    const profRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/business_profiles?select=user_id,biz_name`,
+      { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    const profiles = await profRes.json();
+    if (!profiles || !Array.isArray(profiles)) return { ok: true, sent: 0 };
+
+    let sent = 0;
+    for (const prof of profiles) {
+      // Get last 7 days of appointments
+      const weekAgo = new Date();
+      weekAgo.setDate(weekAgo.getDate() - 7);
+
+      const apptRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/appointments?select=price,status,client_name,created_at&owner_id=eq.${prof.user_id}&created_at=gte.${weekAgo.toISOString()}`,
+        { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+      );
+      const appts = await apptRes.json();
+      if (!appts || !Array.isArray(appts) || appts.length === 0) continue;
+
+      const confirmed = appts.filter(a => a.status === "confirmed");
+      const revenue = confirmed.reduce((s, a) => s + (parseInt((a.price || "0").replace(/\D/g, "")) || 0), 0);
+      const newClients = [...new Set(appts.map(a => a.client_name))].length;
+      const cancelled = appts.filter(a => a.status === "cancelled").length;
+
+      // Get owner email
+      const ownerEmail = await getOwnerEmail(prof.user_id);
+      if (!ownerEmail) continue;
+
+      try {
+        await resend.emails.send({
+          from: "onboarding@resend.dev",
+          to: ownerEmail,
+          subject: `📊 Your Weekly Summary — ${prof.biz_name}`,
+          html: `
+            <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#0f0f14;color:#fff;border-radius:16px;overflow:hidden;">
+              <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:32px 28px 24px;">
+                <div style="font-size:14px;opacity:0.8;margin-bottom:4px">Weekly Summary</div>
+                <div style="font-size:22px;font-weight:800">${prof.biz_name}</div>
+              </div>
+              <div style="padding:28px;">
+                <div style="display:flex;gap:16px;margin-bottom:24px;">
+                  <div style="flex:1;background:#1e1e2e;border-radius:12px;padding:16px;text-align:center">
+                    <div style="font-size:28px;font-weight:800;color:#fbbf24">$${revenue}</div>
+                    <div style="font-size:12px;color:#888;margin-top:4px">Revenue</div>
+                  </div>
+                  <div style="flex:1;background:#1e1e2e;border-radius:12px;padding:16px;text-align:center">
+                    <div style="font-size:28px;font-weight:800;color:#c4b5fd">${confirmed.length}</div>
+                    <div style="font-size:12px;color:#888;margin-top:4px">Appointments</div>
+                  </div>
+                </div>
+                <div style="display:flex;gap:16px;margin-bottom:24px;">
+                  <div style="flex:1;background:#1e1e2e;border-radius:12px;padding:16px;text-align:center">
+                    <div style="font-size:28px;font-weight:800;color:#4ade80">${newClients}</div>
+                    <div style="font-size:12px;color:#888;margin-top:4px">Clients</div>
+                  </div>
+                  <div style="flex:1;background:#1e1e2e;border-radius:12px;padding:16px;text-align:center">
+                    <div style="font-size:28px;font-weight:800;color:#fb7185">${cancelled}</div>
+                    <div style="font-size:12px;color:#888;margin-top:4px">Cancelled</div>
+                  </div>
+                </div>
+                <div style="text-align:center;font-size:14px;color:#888;padding:12px;background:#1e1e2e;border-radius:10px;">
+                  Open Pocketflow to see your full dashboard ✦
+                </div>
+              </div>
+            </div>
+          `,
+        });
+        sent++;
+      } catch (emailErr) {
+        console.error(`Weekly summary email failed for ${prof.user_id}:`, emailErr.message);
+      }
+    }
+
+    console.log(`Weekly summaries sent: ${sent}`);
+    return { ok: true, sent };
+  } catch (err) {
+    console.error("runWeeklySummary error:", err.message);
     return { ok: false, error: err.message };
   }
 }
