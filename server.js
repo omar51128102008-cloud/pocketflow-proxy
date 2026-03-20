@@ -303,7 +303,7 @@ app.post("/notify-booking", async (req, res) => {
           html: `
             <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#0f0f14;color:#fff;border-radius:16px;overflow:hidden;">
               <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:32px 28px 24px;">
-                <div style="font-size:28px;margin-bottom:8px;font-weight:800">Spool</div>
+                <div style="font-size:28px;margin-bottom:8px;font-weight:800">spool</div>
                 <div style="font-size:22px;font-weight:800;margin-bottom:4px;">New Booking!</div>
                 <div style="font-size:14px;opacity:0.8;">${biz_name}</div>
               </div>
@@ -318,7 +318,7 @@ app.post("/notify-booking", async (req, res) => {
                   ${note ? `<tr><td style="padding:10px 0;color:#888;font-size:13px;">Note</td><td style="padding:10px 0;font-size:14px;">${note}</td></tr>` : ""}
                 </table>
                 <div style="margin-top:24px;padding:14px;background:#1e1e2e;border-radius:10px;font-size:12px;color:#888;text-align:center;">
-                  Open Spool to manage this appointment
+                  Open spool to manage this appointment
                 </div>
               </div>
             </div>
@@ -686,7 +686,7 @@ async function runWeeklySummary() {
                   </div>
                 </div>
                 <div style="text-align:center;font-size:14px;color:#888;padding:12px;background:#1e1e2e;border-radius:10px;">
-                  Open Spool to see your full dashboard ✦
+                  Open spool to see your full dashboard ✦
                 </div>
               </div>
             </div>
@@ -778,7 +778,7 @@ app.post("/add-to-google-calendar", async (req, res) => {
     const event = {
       summary: `${service} — ${client_name}`,
       location: biz_location || biz_name || "",
-      description: `Client: ${client_name}\nPhone: ${phone || ""}\nDeposit: ${deposit || ""}\nBooked via Spool`,
+      description: `Client: ${client_name}\nPhone: ${phone || ""}\nDeposit: ${deposit || ""}\nBooked via spool`,
       start: { dateTime: start.toISOString() },
       end: { dateTime: end.toISOString() },
       reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 60 }, { method: "email", minutes: 1440 }] },
@@ -832,4 +832,4 @@ app.post("/send-promo", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`Spool proxy running on port ${PORT}`));
+app.listen(PORT, () => console.log(`spool proxy running on port ${PORT}`));
