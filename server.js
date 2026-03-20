@@ -303,7 +303,7 @@ app.post("/notify-booking", async (req, res) => {
           html: `
             <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#0f0f14;color:#fff;border-radius:16px;overflow:hidden;">
               <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:32px 28px 24px;">
-                <div style="font-size:28px;margin-bottom:8px;">✦</div>
+                <div style="font-size:28px;margin-bottom:8px;font-weight:800">Spool</div>
                 <div style="font-size:22px;font-weight:800;margin-bottom:4px;">New Booking!</div>
                 <div style="font-size:14px;opacity:0.8;">${biz_name}</div>
               </div>
