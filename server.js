@@ -318,7 +318,7 @@ app.post("/notify-booking", async (req, res) => {
                   ${note ? `<tr><td style="padding:10px 0;color:#888;font-size:13px;">Note</td><td style="padding:10px 0;font-size:14px;">${note}</td></tr>` : ""}
                 </table>
                 <div style="margin-top:24px;padding:14px;background:#1e1e2e;border-radius:10px;font-size:12px;color:#888;text-align:center;">
-                  Open Pocketflow to manage this appointment
+                  Open Spool to manage this appointment
                 </div>
               </div>
             </div>
@@ -686,7 +686,7 @@ async function runWeeklySummary() {
                   </div>
                 </div>
                 <div style="text-align:center;font-size:14px;color:#888;padding:12px;background:#1e1e2e;border-radius:10px;">
-                  Open Pocketflow to see your full dashboard ✦
+                  Open Spool to see your full dashboard ✦
                 </div>
               </div>
             </div>
@@ -778,7 +778,7 @@ app.post("/add-to-google-calendar", async (req, res) => {
     const event = {
       summary: `${service} — ${client_name}`,
       location: biz_location || biz_name || "",
-      description: `Client: ${client_name}\nPhone: ${phone || ""}\nDeposit: ${deposit || ""}\nBooked via Pocketflow`,
+      description: `Client: ${client_name}\nPhone: ${phone || ""}\nDeposit: ${deposit || ""}\nBooked via Spool`,
       start: { dateTime: start.toISOString() },
       end: { dateTime: end.toISOString() },
       reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 60 }, { method: "email", minutes: 1440 }] },
@@ -832,4 +832,4 @@ app.post("/send-promo", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`Pocketflow proxy running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Spool proxy running on port ${PORT}`));
