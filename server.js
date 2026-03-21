@@ -851,5 +851,246 @@ app.post("/send-promo", async (req, res) => {
   }
 });
 
+// ── META WEBHOOKS (WhatsApp, Instagram, Messenger) ──────────────────────────
+const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || "spool_webhook_verify_2024";
+const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || "";
+const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID || "";
+
+// Webhook verification (GET) — Meta sends this to verify your endpoint
+app.get("/webhook/meta", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === META_VERIFY_TOKEN) {
+    console.log("Meta webhook verified!");
+    return res.status(200).send(challenge);
+  }
+  res.status(403).send("Forbidden");
+});
+
+// Webhook receiver (POST) — receives messages from WhatsApp/Instagram/Messenger
+app.post("/webhook/meta", async (req, res) => {
+  res.status(200).send("EVENT_RECEIVED"); // Respond immediately
+
+  try {
+    const body = req.body;
+    if (!body || !body.entry) return;
+
+    for (const entry of body.entry) {
+      // WhatsApp messages
+      if (entry.changes) {
+        for (const change of entry.changes) {
+          if (change.field === "messages" && change.value?.messages) {
+            for (const msg of change.value.messages) {
+              const from = msg.from; // phone number
+              const text = msg.text?.body || msg.caption || "[media]";
+              const contactName = change.value.contacts?.[0]?.profile?.name || from;
+              console.log(`WhatsApp from ${contactName} (${from}): ${text}`);
+
+              // Find which business owns this WhatsApp number
+              const phoneId = change.value.metadata?.phone_number_id;
+              // For now, save to messages table with platform = "whatsapp"
+              await saveIncomingMessage(contactName, from, text, "whatsapp", phoneId);
+            }
+          }
+        }
+      }
+
+      // Instagram & Messenger messages
+      if (entry.messaging) {
+        for (const event of entry.messaging) {
+          if (event.message) {
+            const senderId = event.sender?.id;
+            const text = event.message?.text || "[media]";
+            const platform = entry.id?.includes("instagram") ? "instagram" : "messenger";
+            console.log(`${platform} from ${senderId}: ${text}`);
+
+            // Look up sender name (best effort)
+            let senderName = senderId;
+            if (META_ACCESS_TOKEN) {
+              try {
+                const profileRes = await fetch(`https://graph.facebook.com/${senderId}?fields=name&access_token=${META_ACCESS_TOKEN}`);
+                const profile = await profileRes.json();
+                if (profile.name) senderName = profile.name;
+              } catch {}
+            }
+
+            await saveIncomingMessage(senderName, senderId, text, platform, null);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Webhook processing error:", err.message);
+  }
+});
+
+async function saveIncomingMessage(name, sender_id, text, platform, phone_id) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return;
+  try {
+    // Try to match this to a business owner
+    // For WhatsApp: match by phone_id in business_profiles
+    // For now: save with a lookup field and the AI will handle routing
+    let ownerId = null;
+
+    // Simple lookup: find business with connected WhatsApp (stored in settings)
+    if (platform === "whatsapp") {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/business_profiles?select=user_id&limit=1`,
+        { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+      );
+      const profiles = await res.json();
+      if (profiles && profiles[0]) ownerId = profiles[0].user_id;
+    }
+
+    if (!ownerId) {
+      // Fallback: use first business profile (single-tenant for now)
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/business_profiles?select=user_id&limit=1`,
+        { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+      );
+      const profiles = await res.json();
+      if (profiles && profiles[0]) ownerId = profiles[0].user_id;
+    }
+
+    if (!ownerId) { console.log("No business owner found for incoming message"); return; }
+
+    // Save message
+    await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
+      method: "POST",
+      headers: {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        owner_id: ownerId,
+        name: name,
+        sender_id: sender_id,
+        platform: platform,
+        preview: text.slice(0, 200),
+        full_text: text,
+        unread: true,
+        handled: false,
+      }),
+    });
+
+    console.log(`Saved ${platform} message from ${name} for owner ${ownerId}`);
+
+    // Auto-reply if AI auto-reply is enabled
+    try {
+      const profRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/business_profiles?select=settings,biz_name,ai_name&user_id=eq.${ownerId}&limit=1`,
+        { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+      );
+      const profData = await profRes.json();
+      const settings = profData?.[0]?.settings || {};
+      const bizName = profData?.[0]?.biz_name || "our business";
+      const aiName = profData?.[0]?.ai_name || "Aria";
+
+      if (settings.aiReplies) {
+        // Generate AI reply
+        const aiReply = await generateAutoReply(text, bizName, aiName, ownerId);
+        if (aiReply) {
+          // Send reply via the appropriate platform
+          if (platform === "whatsapp" && WHATSAPP_PHONE_ID && META_ACCESS_TOKEN) {
+            await fetch(`https://graph.facebook.com/v18.0/${WHATSAPP_PHONE_ID}/messages`, {
+              method: "POST",
+              headers: { "Authorization": `Bearer ${META_ACCESS_TOKEN}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ messaging_product: "whatsapp", to: sender_id, text: { body: aiReply } }),
+            });
+          } else if ((platform === "instagram" || platform === "messenger") && META_ACCESS_TOKEN) {
+            await fetch(`https://graph.facebook.com/v18.0/me/messages?access_token=${META_ACCESS_TOKEN}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ recipient: { id: sender_id }, message: { text: aiReply } }),
+            });
+          }
+
+          // Mark as handled
+          await fetch(`${SUPABASE_URL}/rest/v1/messages?sender_id=eq.${sender_id}&owner_id=eq.${ownerId}&handled=eq.false`, {
+            method: "PATCH",
+            headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ handled: true, reply: aiReply }),
+          });
+        }
+      }
+    } catch (autoErr) {
+      console.error("Auto-reply error:", autoErr.message);
+    }
+  } catch (err) {
+    console.error("saveIncomingMessage error:", err.message);
+  }
+}
+
+async function generateAutoReply(clientMessage, bizName, aiName, ownerId) {
+  if (!process.env.GROQ_API_KEY) return null;
+  try {
+    // Load services for context
+    const svcRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/services?select=name,price,duration&owner_id=eq.${ownerId}&active=eq.true&limit=10`,
+      { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    const services = await svcRes.json();
+    const svcList = (services || []).map(s => `${s.name} ($${s.price}, ${s.duration})`).join(", ");
+
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${process.env.GROQ_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        max_tokens: 150,
+        messages: [
+          { role: "system", content: `You are ${aiName}, an AI assistant for ${bizName}, a beauty business. Reply to client messages warmly and helpfully. Services: ${svcList || "various beauty services"}. Keep replies short (2-3 sentences). If they want to book, give them the booking link. Be friendly and professional. Never say you're an AI unless asked directly.` },
+          { role: "user", content: clientMessage },
+        ],
+      }),
+    });
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content?.trim() || null;
+  } catch (e) {
+    console.error("generateAutoReply error:", e.message);
+    return null;
+  }
+}
+
+// ── Reply to a message manually from the app ─────────────────────────────────
+app.post("/reply-message", async (req, res) => {
+  try {
+    const { message_id, sender_id, platform, reply_text } = req.body;
+    if (!reply_text || !sender_id) return res.status(400).json({ error: "Missing fields" });
+
+    let sent = false;
+    if (platform === "whatsapp" && WHATSAPP_PHONE_ID && META_ACCESS_TOKEN) {
+      const r = await fetch(`https://graph.facebook.com/v18.0/${WHATSAPP_PHONE_ID}/messages`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${META_ACCESS_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ messaging_product: "whatsapp", to: sender_id, text: { body: reply_text } }),
+      });
+      sent = r.ok;
+    } else if ((platform === "instagram" || platform === "messenger") && META_ACCESS_TOKEN) {
+      const r = await fetch(`https://graph.facebook.com/v18.0/me/messages?access_token=${META_ACCESS_TOKEN}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recipient: { id: sender_id }, message: { text: reply_text } }),
+      });
+      sent = r.ok;
+    }
+
+    // Update message in DB
+    if (message_id && SUPABASE_URL && SUPABASE_SERVICE_KEY) {
+      await fetch(`${SUPABASE_URL}/rest/v1/messages?id=eq.${message_id}`, {
+        method: "PATCH",
+        headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ handled: true, unread: false, reply: reply_text }),
+      });
+    }
+
+    res.json({ ok: true, sent });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`spool proxy running on port ${PORT}`));
