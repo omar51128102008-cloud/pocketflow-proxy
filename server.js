@@ -13,7 +13,32 @@ if (webpush) {
 }
 
 const app = express();
-app.use(cors());
+const allowedOrigins = [
+  "https://omar51128102008-cloud.github.io",
+  "http://localhost:3000",
+  "http://localhost:8080",
+];
+app.use(cors({
+  origin: function(origin, callback) {
+    if (!origin || allowedOrigins.some(o => origin.startsWith(o))) return callback(null, true);
+    callback(null, true); // Allow for now, log later
+  }
+}));
+
+// Basic rate limiter (per IP, 100 requests per minute)
+const rateLimits = {};
+const rateLimit = (req, res, next) => {
+  const ip = req.headers["x-forwarded-for"] || req.ip || "unknown";
+  const now = Date.now();
+  if (!rateLimits[ip]) rateLimits[ip] = [];
+  rateLimits[ip] = rateLimits[ip].filter(t => now - t < 60000);
+  if (rateLimits[ip].length >= 100) return res.status(429).json({ error: "Too many requests" });
+  rateLimits[ip].push(now);
+  next();
+};
+app.use(rateLimit);
+// Clean up rate limits every 5 minutes
+setInterval(() => { const now = Date.now(); Object.keys(rateLimits).forEach(ip => { rateLimits[ip] = rateLimits[ip].filter(t => now - t < 60000); if (rateLimits[ip].length === 0) delete rateLimits[ip]; }); }, 300000);
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
@@ -100,6 +125,15 @@ app.post("/webhook", express.raw({ type: "application/json" }), async (req, res)
 
 // ── JSON parsing (after webhook) ──────────────────────────────────────────────
 app.use(express.json());
+
+// Verify owner_id is a valid UUID format for sensitive endpoints
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const verifyOwner = (req, res, next) => {
+  const oid = req.body?.owner_id;
+  if (oid && !UUID_RE.test(oid)) return res.status(400).json({ error: "Invalid owner_id" });
+  next();
+};
+app.use(verifyOwner);
 
 // ── HEALTH ────────────────────────────────────────────────────────────────────
 app.get("/", (req, res) => res.json({ status: "ok", service: "pocketflow-proxy" }));
