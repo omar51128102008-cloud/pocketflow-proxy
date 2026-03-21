@@ -3,6 +3,14 @@ const cors = require("cors");
 const fetch = (...args) => import("node-fetch").then(({ default: f }) => f(...args));
 const Stripe = require("stripe");
 const { Resend } = require("resend");
+let webpush;
+try { webpush = require("web-push"); } catch { webpush = null; }
+
+const VAPID_PUBLIC_KEY = "BGq4JjwOYIGz2gmofZnpK5ZRdCVaZJRcmgVRw16R8bj0zqruNGoGsuakmrRYgbdBpgRvrscLph2bTJ4aShHUK9A";
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "N4heKSsJrN84adHa5LbXdF19adcYqvNR-PvpPx7oOEk";
+if (webpush) {
+  webpush.setVapidDetails("mailto:hello@spool.app", VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+}
 
 const app = express();
 app.use(cors());
@@ -373,6 +381,11 @@ app.post("/notify-booking", async (req, res) => {
         ? `Hi ${client_name}! Your ${service} at ${biz_name} is confirmed for ${date} at ${time}. Manage your booking: ${manageUrl}`
         : `Hi ${client_name}! Your ${service} at ${biz_name} is confirmed for ${date} at ${time}. See you then!`;
       await sendSMS(clientPhone, smsText);
+    }
+
+    // Push notification to owner (works even when browser is closed)
+    if (owner_id) {
+      sendPushToOwner(owner_id, "New Booking!", `${client_name} booked ${service} on ${date} at ${time}`, "/pocketflow/").catch(() => {});
     }
 
     res.json({ ok: true });
@@ -977,6 +990,9 @@ async function saveIncomingMessage(name, sender_id, text, platform, phone_id) {
 
     console.log(`Saved ${platform} message from ${name} for owner ${ownerId}`);
 
+    // Push notification to owner about new message
+    sendPushToOwner(ownerId, "New Message", `${name} sent you a message via ${platform}`, "/pocketflow/").catch(() => {});
+
     // Auto-reply if AI auto-reply is enabled
     try {
       const profRes = await fetch(
@@ -1091,6 +1107,51 @@ app.post("/reply-message", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ── PUSH NOTIFICATIONS ───────────────────────────────────────────────────────
+app.post("/save-push-sub", async (req, res) => {
+  try {
+    const { owner_id, subscription } = req.body;
+    if (!owner_id || !subscription) return res.status(400).json({ error: "Missing fields" });
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return res.json({ ok: false });
+    await fetch(`${SUPABASE_URL}/rest/v1/push_subscriptions`, {
+      method: "POST",
+      headers: {
+        "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates",
+      },
+      body: JSON.stringify({ owner_id, subscription: JSON.stringify(subscription), endpoint: subscription.endpoint }),
+    });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+async function sendPushToOwner(owner_id, title, body, url) {
+  if (!webpush || !SUPABASE_URL || !SUPABASE_SERVICE_KEY) return;
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/push_subscriptions?select=subscription&owner_id=eq.${owner_id}`,
+      { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
+    );
+    const subs = await res.json();
+    if (!subs || subs.length === 0) return;
+    const payload = JSON.stringify({ title, body, url: url || "/" });
+    for (const s of subs) {
+      try {
+        const sub = typeof s.subscription === "string" ? JSON.parse(s.subscription) : s.subscription;
+        await webpush.sendNotification(sub, payload);
+      } catch (e) {
+        // If subscription is expired/invalid, delete it
+        if (e.statusCode === 410 || e.statusCode === 404) {
+          await fetch(`${SUPABASE_URL}/rest/v1/push_subscriptions?owner_id=eq.${owner_id}&subscription=eq.${encodeURIComponent(s.subscription)}`, {
+            method: "DELETE",
+            headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` },
+          }).catch(() => {});
+        }
+      }
+    }
+  } catch (e) { console.error("Push send error:", e.message); }
+}
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`spool proxy running on port ${PORT}`));
