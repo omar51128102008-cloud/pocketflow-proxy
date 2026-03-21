@@ -385,7 +385,8 @@ app.post("/notify-booking", async (req, res) => {
 
     // Push notification to owner (works even when browser is closed)
     if (owner_id) {
-      sendPushToOwner(owner_id, "New Booking!", `${client_name} booked ${service} on ${date} at ${time}`, "/pocketflow/", "booking").catch(() => {});
+      const pushBody = `${client_name} — ${service}\n${date} at ${time}${deposit ? `\nDeposit: ${deposit}` : ""}${total ? ` · Total: ${total}` : ""}`;
+      sendPushToOwner(owner_id, "New Booking!", pushBody, "https://omar51128102008-cloud.github.io/pocketflow/").catch(() => {});
     }
 
     res.json({ ok: true });
@@ -991,7 +992,7 @@ async function saveIncomingMessage(name, sender_id, text, platform, phone_id) {
     console.log(`Saved ${platform} message from ${name} for owner ${ownerId}`);
 
     // Push notification to owner about new message
-    sendPushToOwner(ownerId, "New Message", `${name} sent you a message via ${platform}`, "/pocketflow/", "message").catch(() => {});
+    sendPushToOwner(ownerId, `New ${platform} Message`, `${name}: ${text.slice(0, 100)}${text.length > 100 ? "..." : ""}`, "https://omar51128102008-cloud.github.io/pocketflow/").catch(() => {});
 
     // Auto-reply if AI auto-reply is enabled
     try {
@@ -1137,9 +1138,9 @@ async function sendPushToOwner(owner_id, title, body, url, type) {
     if (!subs || subs.length === 0) return;
     const payload = JSON.stringify({
       title, body, url: url || "/",
-      type: type || "general",
       icon: "https://omar51128102008-cloud.github.io/pocketflow/notification-icon.png",
       badge: "https://omar51128102008-cloud.github.io/pocketflow/notification-icon.png",
+      image: "https://omar51128102008-cloud.github.io/pocketflow/notification-icon-512.png",
     });
     for (const s of subs) {
       try {
