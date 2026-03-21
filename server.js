@@ -1041,7 +1041,7 @@ async function generateAutoReply(clientMessage, bizName, aiName, ownerId) {
         model: "llama-3.1-8b-instant",
         max_tokens: 150,
         messages: [
-          { role: "system", content: `You are ${aiName}, an AI assistant for ${bizName}, a beauty business. Reply to client messages warmly and helpfully. Services: ${svcList || "various beauty services"}. Keep replies short (2-3 sentences). If they want to book, give them the booking link. Be friendly and professional. Never say you're an AI unless asked directly.` },
+          { role: "system", content: `You are ${aiName}, an AI assistant for ${bizName}, a business. Reply to client messages warmly and helpfully. Services: ${svcList || "various services"}. Keep replies short (2-3 sentences). If they want to book, give them the booking link. Be friendly and professional. Never say you're an AI unless asked directly.` },
           { role: "user", content: clientMessage },
         ],
       }),
