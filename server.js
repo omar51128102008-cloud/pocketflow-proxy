@@ -713,17 +713,37 @@ async function getGoogleToken(owner_id) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return null;
   try {
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/google_tokens?select=access_token,expiry,email&owner_id=eq.${owner_id}&limit=1`,
+      `${SUPABASE_URL}/rest/v1/google_tokens?select=access_token,refresh_token,expiry,email&owner_id=eq.${owner_id}&limit=1`,
       { headers: { "apikey": SUPABASE_SERVICE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}` } }
     );
     const rows = await res.json();
-    return rows && rows.length > 0 ? rows[0] : null;
+    if (!rows || rows.length === 0) return null;
+    const token = rows[0];
+    // If token expired but we have refresh_token, auto-refresh
+    if (token.expiry && Date.now() > token.expiry && token.refresh_token) {
+      try {
+        const refreshRes = await fetch("https://oauth2.googleapis.com/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: `grant_type=refresh_token&refresh_token=${token.refresh_token}&client_id=${process.env.GOOGLE_CLIENT_ID || ""}&client_secret=${process.env.GOOGLE_CLIENT_SECRET || ""}`,
+        });
+        const refreshData = await refreshRes.json();
+        if (refreshData.access_token) {
+          const newExpiry = Date.now() + (refreshData.expires_in || 3600) * 1000;
+          await saveGoogleToken(owner_id, refreshData.access_token, newExpiry, token.email, token.refresh_token);
+          return { access_token: refreshData.access_token, expiry: newExpiry, email: token.email };
+        }
+      } catch (e) { console.error("Token refresh failed:", e.message); }
+    }
+    return token;
   } catch (e) { console.error("getGoogleToken error:", e.message); return null; }
 }
 
-async function saveGoogleToken(owner_id, access_token, expiry, email) {
+async function saveGoogleToken(owner_id, access_token, expiry, email, refresh_token) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return false;
   try {
+    const body = { owner_id, access_token, expiry, email };
+    if (refresh_token) body.refresh_token = refresh_token;
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/google_tokens`,
       {
@@ -734,7 +754,7 @@ async function saveGoogleToken(owner_id, access_token, expiry, email) {
           "Content-Type": "application/json",
           "Prefer": "resolution=merge-duplicates",
         },
-        body: JSON.stringify({ owner_id, access_token, expiry, email }),
+        body: JSON.stringify(body),
       }
     );
     return res.ok;
@@ -758,7 +778,7 @@ app.post("/add-to-google-calendar", async (req, res) => {
   try {
     const { owner_id, service, date, time, client_name, biz_name, biz_location, deposit, phone } = req.body;
     const tokenData = await getGoogleToken(owner_id);
-    if (!tokenData || Date.now() > tokenData.expiry) {
+    if (!tokenData || !tokenData.access_token) {
       return res.json({ ok: false, reason: "no_token" });
     }
 
