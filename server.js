@@ -385,7 +385,7 @@ app.post("/notify-booking", async (req, res) => {
 
     // Push notification to owner (works even when browser is closed)
     if (owner_id) {
-      sendPushToOwner(owner_id, "New Booking!", `${client_name} booked ${service} on ${date} at ${time}`, "/pocketflow/").catch(() => {});
+      sendPushToOwner(owner_id, "New Booking!", `${client_name} booked ${service} on ${date} at ${time}`, "/pocketflow/", "booking").catch(() => {});
     }
 
     res.json({ ok: true });
@@ -991,7 +991,7 @@ async function saveIncomingMessage(name, sender_id, text, platform, phone_id) {
     console.log(`Saved ${platform} message from ${name} for owner ${ownerId}`);
 
     // Push notification to owner about new message
-    sendPushToOwner(ownerId, "New Message", `${name} sent you a message via ${platform}`, "/pocketflow/").catch(() => {});
+    sendPushToOwner(ownerId, "New Message", `${name} sent you a message via ${platform}`, "/pocketflow/", "message").catch(() => {});
 
     // Auto-reply if AI auto-reply is enabled
     try {
@@ -1126,7 +1126,7 @@ app.post("/save-push-sub", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-async function sendPushToOwner(owner_id, title, body, url) {
+async function sendPushToOwner(owner_id, title, body, url, type) {
   if (!webpush || !SUPABASE_URL || !SUPABASE_SERVICE_KEY) return;
   try {
     const res = await fetch(
@@ -1135,7 +1135,12 @@ async function sendPushToOwner(owner_id, title, body, url) {
     );
     const subs = await res.json();
     if (!subs || subs.length === 0) return;
-    const payload = JSON.stringify({ title, body, url: url || "/", icon: "https://omar51128102008-cloud.github.io/pocketflow/notification-icon.png", badge: "https://omar51128102008-cloud.github.io/pocketflow/notification-icon.png" });
+    const payload = JSON.stringify({
+      title, body, url: url || "/",
+      type: type || "general",
+      icon: "https://omar51128102008-cloud.github.io/pocketflow/notification-icon.png",
+      badge: "https://omar51128102008-cloud.github.io/pocketflow/notification-icon.png",
+    });
     for (const s of subs) {
       try {
         const sub = typeof s.subscription === "string" ? JSON.parse(s.subscription) : s.subscription;
