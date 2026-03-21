@@ -1174,7 +1174,7 @@ async function sendPushToOwner(owner_id, title, body, url, type) {
       title, body, url: url || "/",
       icon: "https://omar51128102008-cloud.github.io/pocketflow/notification-icon.png",
       badge: "https://omar51128102008-cloud.github.io/pocketflow/notification-icon.png",
-      image: "https://omar51128102008-cloud.github.io/pocketflow/notification-icon-512.png",
+      image: "https://omar51128102008-cloud.github.io/pocketflow/notification-banner.png",
     });
     for (const s of subs) {
       try {
