@@ -1135,7 +1135,7 @@ async function sendPushToOwner(owner_id, title, body, url) {
     );
     const subs = await res.json();
     if (!subs || subs.length === 0) return;
-    const payload = JSON.stringify({ title, body, url: url || "/" });
+    const payload = JSON.stringify({ title, body, url: url || "/", icon: "https://omar51128102008-cloud.github.io/pocketflow/notification-icon.png", badge: "https://omar51128102008-cloud.github.io/pocketflow/notification-icon.png" });
     for (const s of subs) {
       try {
         const sub = typeof s.subscription === "string" ? JSON.parse(s.subscription) : s.subscription;
